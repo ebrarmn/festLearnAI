@@ -1,0 +1,26 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Database and vector db
+data/db/
+*.sqlite3
+*.db
+backend/festlearn.db
+
+# Frontend
+node_modules/
+dist/
+build/
+.env.local
+.env.*.local
