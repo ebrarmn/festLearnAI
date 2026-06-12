@@ -24,3 +24,7 @@ dist/
 build/
 .env.local
 .env.*.local
+
+# Documentation
+festLearnAI_Proje_Raporu.md
+festLearnAI_SRS.md
