@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Query, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Query, Depends, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -8,10 +8,14 @@ import os
 import uvicorn
 import datetime
 import hashlib
+import secrets
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 
-from database import engine, Base, get_db, User, QuizHistory, Badge, UserBadge, Document, seed_badges
-from rag_service import ingest_pdf, generate_quiz_from_db
+from database import engine, Base, get_db, User, QuizHistory, Badge, UserBadge, Document, PasswordResetToken, seed_badges
+from rag_service import ingest_pdf, generate_quiz_from_db, evaluate_open_ended_answers
 
 # Uygulama başlarken tabloları oluştur
 Base.metadata.create_all(bind=engine)
@@ -41,6 +45,47 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return hash_password(password) == hashed
 
+# --- E-posta Gönderme ---
+def send_reset_email(to_email: str, reset_token: str):
+    """Şifre sıfırlama e-postası gönderir."""
+    smtp_email = os.environ.get("SMTP_EMAIL")
+    smtp_password = os.environ.get("SMTP_APP_PASSWORD")
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    
+    reset_link = f"{frontend_url}/reset-password?token={reset_token}"
+    
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "🔑 festLearnAI - Şifre Sıfırlama"
+    msg["From"] = smtp_email
+    msg["To"] = to_email
+    
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; background: #1a1f35; border-radius: 16px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+            <div style="font-size: 48px; margin-bottom: 8px;">🧠</div>
+            <h2 style="color: #818cf8; margin: 0;">festLearnAI</h2>
+        </div>
+        <p style="color: #f1f5f9; font-size: 15px;">Merhaba,</p>
+        <p style="color: #94a3b8; font-size: 14px;">Şifre sıfırlama talebinde bulundunuz. Aşağıdaki butona tıklayarak yeni şifrenizi belirleyebilirsiniz:</p>
+        <div style="text-align: center; margin: 28px 0;">
+            <a href="{reset_link}" 
+               style="display: inline-block; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; 
+                      padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px;">
+                Şifremi Sıfırla
+            </a>
+        </div>
+        <p style="color: #64748b; font-size: 12px; text-align: center;">Bu link 1 saat geçerlidir.</p>
+        <hr style="border: none; border-top: 1px solid #2a3050; margin: 20px 0;">
+        <p style="color: #64748b; font-size: 11px; text-align: center;">Bu talebi siz yapmadıysanız bu e-postayı görmezden gelin.</p>
+    </div>
+    """
+    
+    msg.attach(MIMEText(html_content, "html"))
+    
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(smtp_email, smtp_password)
+        server.sendmail(smtp_email, to_email, msg.as_string())
+
 # --- Pydantic Modelleri ---
 class RegisterRequest(BaseModel):
     username: str
@@ -57,6 +102,13 @@ class LoginRequest(BaseModel):
     email_or_username: str
     password: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
 class SaveScoreRequest(BaseModel):
     user_id: int
     topic: str
@@ -70,6 +122,9 @@ class EvaluateAnswerRequest(BaseModel):
     expected_answer: str
     student_answer: str
     keywords: List[str] = []
+
+class EvaluateAnswersBatchRequest(BaseModel):
+    answers: List[dict]
 
 # --- API ENDPOINT'LERİ ---
 
@@ -201,6 +256,19 @@ def get_user_profile(user_id: int, db: Session = Depends(get_db)):
         "timestamp": q.timestamp.isoformat() if q.timestamp else None
     } for q in recent_quizzes]
     
+    # --- Global Seviye İlerlemesi Hesaplama ---
+    total_questions_done = db.query(func.sum(QuizHistory.total_questions)).filter(QuizHistory.user_id == user_id).scalar() or 0
+    level_idx = LEVELS.index(user.current_level) if user.current_level in LEVELS else 0
+    progress_percent = 100
+    progress_text = "Maksimum Seviye!"
+    
+    if level_idx < len(GLOBAL_LEVEL_REQUIREMENTS):
+        req = GLOBAL_LEVEL_REQUIREMENTS[level_idx]
+        q_prog = min(100, int((quiz_count / req["min_quizzes"]) * 100)) if req["min_quizzes"] > 0 else 100
+        ques_prog = min(100, int((total_questions_done / req["min_questions"]) * 100)) if req["min_questions"] > 0 else 100
+        progress_percent = min(q_prog, ques_prog)
+        progress_text = f"{quiz_count}/{req['min_quizzes']} Quiz • {total_questions_done}/{req['min_questions']} Soru"
+
     return {
         "id": user.id,
         "username": user.username,
@@ -211,37 +279,116 @@ def get_user_profile(user_id: int, db: Session = Depends(get_db)):
         "average_score": round(avg_score, 1),
         "badges": badges_list,
         "recent_quizzes": quizzes_list,
+        "global_progress_percent": progress_percent,
+        "global_progress_text": progress_text,
         "created_at": user.created_at.isoformat() if user.created_at else None
     }
+
+
+@app.post("/forgot-password")
+def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Şifre sıfırlama e-postası gönderir."""
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user:
+        # Güvenlik: kullanıcı olmasa bile aynı mesajı ver
+        return {"message": "Eğer bu e-posta kayıtlıysa, şifre sıfırlama linki gönderildi."}
+    
+    # Eski kullanılmamış tokenları iptal et
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used == False
+    ).update({"used": True})
+    
+    # Yeni token oluştur (1 saat geçerli)
+    token = secrets.token_urlsafe(32)
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token=token,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+    )
+    db.add(reset_token)
+    db.commit()
+    
+    # E-posta gönder
+    try:
+        send_reset_email(user.email, token)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"E-posta gönderilemedi: {str(e)}")
+    
+    return {"message": "Şifre sıfırlama linki e-posta adresinize gönderildi."}
+
+@app.post("/reset-password")
+def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Token ile şifre sıfırlar."""
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Şifre en az 6 karakter olmalıdır.")
+    
+    reset_token = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token == req.token,
+        PasswordResetToken.used == False
+    ).first()
+    
+    if not reset_token:
+        raise HTTPException(status_code=400, detail="Geçersiz veya kullanılmış link.")
+    
+    if reset_token.expires_at < datetime.datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Bu linkin süresi dolmuş. Lütfen yeni bir talep oluşturun.")
+    
+    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    user.password_hash = hash_password(req.new_password)
+    reset_token.used = True
+    db.commit()
+    
+    return {"message": "Şifreniz başarıyla güncellendi! Yeni şifrenizle giriş yapabilirsiniz."}
 
 # ========== DÖKÜMAN İŞLEMLERİ ==========
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_document(
+    file: UploadFile = File(...), 
+    user_id: int = Form(...),
+    db: Session = Depends(get_db)
+):
     """PDF yükler ve RAG sistemine işler."""
     upload_dir = "../data/uploads"
     os.makedirs(upload_dir, exist_ok=True)
-    file_path = os.path.join(upload_dir, file.filename)
+    file_path = os.path.join(upload_dir, f"{user_id}_{file.filename}")
     
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
     file_size = os.path.getsize(file_path)
     
-    # Dokümanı veritabanına kaydet
-    doc = Document(
-        filename=file.filename,
-        file_path=file_path,
-        file_size=file_size,
-        status="processing"
-    )
-    db.add(doc)
+    # Dokümanı veritabanında bul veya oluştur
+    existing_doc = db.query(Document).filter(Document.user_id == user_id, Document.filename == file.filename).first()
+    
+    if existing_doc:
+        doc = existing_doc
+        doc.file_size = file_size
+        doc.status = "processing"
+        doc.uploaded_at = datetime.datetime.utcnow()
+    else:
+        doc = Document(
+            filename=file.filename,
+            file_path=file_path,
+            file_size=file_size,
+            status="processing",
+            user_id=user_id
+        )
+        db.add(doc)
+        
     db.commit()
     
     try:
-        result = ingest_pdf(file_path)
+        result = ingest_pdf(file_path, user_id)
         doc.status = "ready"
         doc.page_count = result.get("pages", 0)
+        
+        # Yeni PDF yüklenince kullanıcıyı Başlangıç seviyesine sıfırla
+        upload_user = db.query(User).filter(User.id == user_id).first()
+        if upload_user:
+            upload_user.current_level = "Başlangıç"
+        
         db.commit()
         return {
             "status": "success", 
@@ -256,9 +403,9 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
-def get_documents(db: Session = Depends(get_db)):
-    """Yüklenen dokümanları listeler."""
-    docs = db.query(Document).order_by(desc(Document.uploaded_at)).all()
+def get_documents(user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Kullanıcının yüklediği dokümanları listeler."""
+    docs = db.query(Document).filter(Document.user_id == user_id).order_by(desc(Document.uploaded_at)).all()
     return [{
         "id": d.id,
         "filename": d.filename,
@@ -268,31 +415,155 @@ def get_documents(db: Session = Depends(get_db)):
         "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None
     } for d in docs]
 
+@app.delete("/documents/{doc_id}")
+def delete_document(doc_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Kullanıcının belirtilen dokümanını siler."""
+    doc = db.query(Document).filter(Document.id == doc_id, Document.user_id == user_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Doküman bulunamadı veya silme yetkiniz yok")
+        
+    try:
+        if os.path.exists(doc.file_path):
+            os.remove(doc.file_path)
+    except Exception as e:
+        print(f"Dosya silinirken hata: {e}")
+        
+    db.delete(doc)
+    db.commit()
+    
+    return {"status": "success", "message": "Doküman başarıyla silindi"}
+
 # ========== QUIZ İŞLEMLERİ ==========
 
-@app.get("/quiz")
-async def get_quiz(
-    user_id: int, 
-    topic: str = Query(...), 
-    num_questions: int = Query(default=5),
-    db: Session = Depends(get_db)
-):
-    """Kullanıcının seviyesine ve daha önceki denemelerine uygun quiz üretir."""
+# ========== KONU BAZLI SEVİYE HESAPLAMA ==========
+
+LEVELS = ["Başlangıç", "Temel Seviye", "Orta Seviye", "İleri Seviye", "Uzman"]
+
+# --- PDF/Konu bazlı seviye şartları ---
+# (Her PDF için bağımsız; puan şartı var)
+TOPIC_LEVEL_REQUIREMENTS = [
+    # Başlangıç → Temel Seviye
+    {"min_quizzes": 2, "min_questions": 10, "recent_count": 2, "min_score": 70},
+    # Temel Seviye → Orta Seviye
+    {"min_quizzes": 4, "min_questions": 20, "recent_count": 2, "min_score": 75},
+    # Orta Seviye → İleri Seviye
+    {"min_quizzes": 6, "min_questions": 30, "recent_count": 3, "min_score": 80},
+    # İleri Seviye → Uzman
+    {"min_quizzes": 8, "min_questions": 40, "recent_count": 3, "min_score": 85},
+]
+
+# --- Genel (Global) seviye şartları ---
+# (Tüm konular toplamı; puan şartı yok — saf deneyim)
+GLOBAL_LEVEL_REQUIREMENTS = [
+    # Başlangıç → Temel Seviye
+    {"min_quizzes": 20,  "min_questions": 100},
+    # Temel Seviye → Orta Seviye
+    {"min_quizzes": 50,  "min_questions": 250},
+    # Orta Seviye → İleri Seviye
+    {"min_quizzes": 100, "min_questions": 500},
+    # İleri Seviye → Uzman
+    {"min_quizzes": 200, "min_questions": 1000},
+]
+
+def get_topic_level(user_id: int, topic: str, db: Session) -> str:
+    """Belirli bir konu/PDF için kullanıcının mevcut seviyesini hesaplar.
+    Son kayıtlı difficulty baz alınır ve YALNIZca bir sonraki seviyenin
+    şartları kontrol edilir — böylece seviye atlama tek tek gerçekleşir.
+    """
+    topic_quizzes = db.query(QuizHistory).filter(
+        QuizHistory.user_id == user_id,
+        QuizHistory.topic == topic
+    ).order_by(QuizHistory.id.asc()).all()
+
+    if not topic_quizzes:
+        return "Başlangıç"
+
+    # Son quizde kaydedilen difficulty seviyesini mevcut seviye olarak al
+    last_difficulty = topic_quizzes[-1].difficulty or "Başlangıç"
+    if last_difficulty not in LEVELS:
+        last_difficulty = "Başlangıç"
+
+    current_level_idx = LEVELS.index(last_difficulty)
+
+    # Zaten en üst seviyedeyse dur
+    if current_level_idx >= len(TOPIC_LEVEL_REQUIREMENTS):
+        return LEVELS[current_level_idx]
+
+    # Sadece bir sonraki seviyenin şartlarını kontrol et (seviye atlamayı engeller)
+    req = TOPIC_LEVEL_REQUIREMENTS[current_level_idx]
+    total_quizzes = len(topic_quizzes)
+    total_questions = sum(q.total_questions or 0 for q in topic_quizzes)
+    recent = topic_quizzes[-req["recent_count"]:]
+
+    if (total_quizzes >= req["min_quizzes"]
+            and total_questions >= req["min_questions"]
+            and all(q.score >= req["min_score"] for q in recent)):
+        return LEVELS[current_level_idx + 1]
+
+    return LEVELS[current_level_idx]
+
+
+def get_global_level(user_id: int, db: Session) -> str:
+    """Kullanıcının tüm konulardaki toplam quiz ve soru sayısına
+    göre genel (global) seviyesini hesaplar.
+    Puan bağımsız — saf deneyim ölçütü. Seviye yalnızca ilerler.
+    """
+    total_quizzes = db.query(QuizHistory).filter(
+        QuizHistory.user_id == user_id
+    ).count()
+    total_questions = db.query(func.sum(QuizHistory.total_questions)).filter(
+        QuizHistory.user_id == user_id
+    ).scalar() or 0
+
+    level_idx = 0
+    for i, req in enumerate(GLOBAL_LEVEL_REQUIREMENTS):
+        if total_quizzes >= req["min_quizzes"] and total_questions >= req["min_questions"]:
+            level_idx = i + 1
+        else:
+            break
+
+    return LEVELS[level_idx]
+
+
+@app.get("/topic-level")
+def get_topic_level_endpoint(user_id: int, topic: str = Query(...), db: Session = Depends(get_db)):
+    """Seçilen konudaki/PDF'teki kullanıcının seviyesini döner."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
     
-    try:
-        # Daha önce bu PDF/konu için quiz çözmüş mü kontrol et
-        previous_quiz = db.query(QuizHistory).filter(QuizHistory.user_id == user_id, QuizHistory.topic == topic).first()
-        
-        if previous_quiz:
-            difficulty_level = user.current_level
-        else:
-            # İlk defa çözüyorsa Başlangıç dedik
-            difficulty_level = "Başlangıç"
+    level = get_topic_level(user_id, topic, db)
+    return {"topic": topic, "level": level}
 
-        quiz_content = generate_quiz_from_db(topic, difficulty_level, num_questions)
+
+@app.get("/quiz")
+async def get_quiz(
+    user_id: int,
+    topic: str = Query(...),
+    num_questions: int = Query(default=5),
+    question_type: str = Query(default="mixed"),
+    db: Session = Depends(get_db)
+):
+    """Kullanıcının o konudaki seviyesine göre quiz üretir."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+
+    try:
+        # Konu bazlı seviyeyi hesapla (global user.current_level değil)
+        difficulty_level = get_topic_level(user_id, topic, db)
+
+        # Konu bir PDF dosya adı mı?
+        source_filename = topic if topic.lower().endswith('.pdf') else None
+
+        quiz_content = generate_quiz_from_db(
+            topic, 
+            difficulty_level, 
+            num_questions, 
+            question_type=question_type, 
+            user_id=user_id, 
+            source_filename=source_filename
+        )
         return {
             "quiz": quiz_content,
             "difficulty_level": difficulty_level,
@@ -301,28 +572,42 @@ async def get_quiz(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/evaluate-answers")
+def evaluate_answers(req: EvaluateAnswersBatchRequest):
+    """Açık uçlu cevapları değerlendirir."""
+    try:
+        results = evaluate_open_ended_answers(req.answers)
+        return {"evaluations": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/save-score")
 def save_score(req: SaveScoreRequest, db: Session = Depends(get_db)):
-    """Skoru kaydeder ve adaptif seviye güncellemesi yapar."""
+    """Skoru kaydeder ve konu bazlı adaptif seviye mesajı döner."""
     user = db.query(User).filter(User.id == req.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
 
-    # 1. Skor kaydını oluştur
+    # 1. Bu quizden ÖNCE konunun seviyesini hesapla
+    topic_level_before = get_topic_level(req.user_id, req.topic, db)
+
+    # 2. Skor kaydını oluştur (difficulty = bu quizi çözerken kullanılan seviye)
     new_history = QuizHistory(
-        user_id=req.user_id, 
-        topic=req.topic, 
+        user_id=req.user_id,
+        topic=req.topic,
         score=req.score,
         total_questions=req.total_questions,
         correct_answers=req.correct_answers,
-        difficulty=user.current_level,
+        difficulty=topic_level_before,
         time_spent=req.time_spent
     )
     db.add(new_history)
+    db.flush()  # ID alabilmek için flush, henüz commit değil
+
     user.total_points += int(req.score)
 
-    # 2. Streak güncelleme
+    # 3. Streak güncelleme
     now = datetime.datetime.utcnow()
     if user.last_active:
         diff = (now - user.last_active).days
@@ -334,36 +619,74 @@ def save_score(req: SaveScoreRequest, db: Session = Depends(get_db)):
         user.streak_days = 1
     user.last_active = now
 
-    # 3. ADAPTİF ZORLUK MANTIĞI
-    levels = ["Başlangıç", "Orta Seviye", "İleri Seviye"]
-    current_idx = levels.index(user.current_level)
+    # 4. Bu quizden SONRA konu seviyesini hesapla
+    topic_level_after = get_topic_level(req.user_id, req.topic, db)
 
-    if req.score >= 80:
-        if current_idx < len(levels) - 1:
-            user.current_level = levels[current_idx + 1]
-            result_msg = f"Harika! {user.current_level} seviyesine yükseldin."
-        else:
-            result_msg = "Mükemmel! Advanced seviyesini başarıyla koruyorsun."
-    elif req.score <= 40:
-        if current_idx > 0:
-            user.current_level = levels[current_idx - 1]
-            result_msg = f"Seviyen {user.current_level} olarak güncellendi."
-        else:
-            result_msg = "Başlangıç seviyesindesin, denemeye devam et!"
+    # 5. Global deneyim seviyesini hesapla ve güncelle (puan bağımsız)
+    new_global_level = get_global_level(req.user_id, db)
+    global_level_changed = False
+    if new_global_level != user.current_level:
+        current_global_idx = LEVELS.index(user.current_level) if user.current_level in LEVELS else 0
+        new_global_idx = LEVELS.index(new_global_level)
+        if new_global_idx > current_global_idx:  # Global seviye yalnızca ilerler
+            user.current_level = new_global_level
+            global_level_changed = True
+
+    # 6. Konu bazlı ilerleme mesajı
+    if global_level_changed and topic_level_after != topic_level_before:
+        result_msg = (f"🎉 Çift terfi! Bu PDF'de {topic_level_after} seviyesine yükseldin "
+                      f"ve genel deneyim seviyeni de {new_global_level}'e taşıdın!")
+    elif global_level_changed:
+        result_msg = f"💫 Deneyim kazandın! Genel seviyeni {new_global_level}'e yükseldi!"
+    elif topic_level_after != topic_level_before:
+        result_msg = f"🎉 Tebrikler! Bu PDF'de {topic_level_after} seviyesine yükseldin!"
     else:
-        result_msg = "İyi gidiyorsun, mevcut seviyeni korudun."
+        # Konu bazlı bir sonraki seviye için ne kadar kaldığını hesapla
+        topic_quizzes = db.query(QuizHistory).filter(
+            QuizHistory.user_id == req.user_id,
+            QuizHistory.topic == req.topic
+        ).all()
+        total_q = len(topic_quizzes)
+        total_questions_done = sum(q.total_questions or 0 for q in topic_quizzes)
+        current_idx = LEVELS.index(topic_level_after)
 
-    # 4. Rozet kontrolü
+        if current_idx < len(TOPIC_LEVEL_REQUIREMENTS):
+            req_next = TOPIC_LEVEL_REQUIREMENTS[current_idx]
+            missing_quizzes = max(0, req_next["min_quizzes"] - total_q)
+            missing_questions = max(0, req_next["min_questions"] - total_questions_done)
+            next_level = LEVELS[current_idx + 1]
+
+            if req.score >= req_next["min_score"]:
+                if missing_quizzes > 0 or missing_questions > 0:
+                    parts = []
+                    if missing_quizzes > 0:
+                        parts.append(f"{missing_quizzes} quiz daha")
+                    if missing_questions > 0:
+                        parts.append(f"{missing_questions} soru daha")
+                    result_msg = f"İyi iş! {next_level} için {' ve '.join(parts)} çözmen gerekiyor."
+                else:
+                    result_msg = f"Harika performans! {next_level} seviyesine çok yakınsın."
+            elif req.score <= 30:
+                result_msg = "Düşük puan aldın. Bu PDF'i tekrar çalış ve tekrar dene!"
+            else:
+                result_msg = f"İyi gidiyorsun! {next_level} için en az %{req_next['min_score']} puan almaya çalış."
+        else:
+            result_msg = "Mükemmel! Bu PDF'de en üst seviyeye ulaştın! 🏆"
+
+
+    # 6. Rozet kontrolü
     new_badges = check_and_award_badges(user, db, req.score)
-    
+
     db.commit()
     return {
         "message": result_msg,
         "new_total_points": user.total_points,
         "current_level": user.current_level,
+        "topic_level": topic_level_after,
         "streak_days": user.streak_days,
         "new_badges": new_badges
     }
+
 
 def check_and_award_badges(user, db, latest_score):
     """Kullanıcının rozet kazanıp kazanmadığını kontrol eder."""
@@ -373,7 +696,7 @@ def check_and_award_badges(user, db, latest_score):
     all_badges = db.query(Badge).all()
     existing_badge_ids = {ub.badge_id for ub in db.query(UserBadge).filter(UserBadge.user_id == user.id).all()}
     
-    levels = {"Başlangıç": 1, "Orta Seviye": 2, "İleri Seviye": 3}
+    levels = {"Başlangıç": 1, "Temel Seviye": 2, "Orta Seviye": 3, "İleri Seviye": 4, "Uzman": 5}
     
     for badge in all_badges:
         if badge.id in existing_badge_ids:

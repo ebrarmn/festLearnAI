@@ -10,4 +10,7 @@ langchain-google-genai
 pypdf
 chromadb
 python-dotenv
-pydanticpsycopg2-binary
+pydantic
+psycopg2-binary
+pymupdf
+Pillow

@@ -167,7 +167,7 @@ export default function Leaderboard({ user }) {
                     </div>
                   </td>
                   <td>
-                    <span className={`badge ${item.current_level === 'Advanced' ? 'badge-advanced' : item.current_level === 'Intermediate' ? 'badge-intermediate' : 'badge-beginner'}`}>
+                    <span className={`badge ${item.current_level === 'Uzman' ? 'badge-expert' : item.current_level === 'İleri Seviye' ? 'badge-advanced' : item.current_level === 'Orta Seviye' ? 'badge-intermediate' : item.current_level === 'Temel Seviye' ? 'badge-elementary' : 'badge-beginner'}`}>
                       {item.current_level}
                     </span>
                   </td>

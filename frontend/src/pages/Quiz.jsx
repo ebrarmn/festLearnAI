@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { getQuiz, saveScore, getDocuments } from '../api';
-import { FiClock, FiCheck, FiX, FiRefreshCw, FiArrowRight, FiFileText } from 'react-icons/fi';
+import { getQuiz, saveScore, getDocuments, getTopicLevel, evaluateAnswers } from '../api';
 
-export default function Quiz({ user, updateUser }) {
+import { FiClock, FiCheck, FiX, FiRefreshCw, FiArrowRight, FiFileText, FiLogOut, FiAlertTriangle } from 'react-icons/fi';
+
+export default function Quiz({ user, updateUser, setQuizActive }) {
   const [step, setStep] = useState('setup'); // setup, loading, quiz, result
+  const [showExitModal, setShowExitModal] = useState(false);
   const [topic, setTopic] = useState('');
   const [numQuestions, setNumQuestions] = useState(5);
+  const [questionType, setQuestionType] = useState('mixed');
   const [questions, setQuestions] = useState([]);
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -14,30 +17,61 @@ export default function Quiz({ user, updateUser }) {
   const [timer, setTimer] = useState(0);
   const [newBadges, setNewBadges] = useState([]);
   const [difficulty, setDifficulty] = useState('');
+  const [topicLevel, setTopicLevel] = useState(null);
   const [documents, setDocuments] = useState([]);
+  const [loadingText, setLoadingText] = useState('AI sorularını hazırlıyor...');
   const timerRef = useRef(null);
+
+  // Konu (topic) değiştiğinde anında seviyesini çek
+  useEffect(() => {
+    const fetchTopicLevel = async () => {
+      if (!topic.trim()) {
+        setTopicLevel(null);
+        return;
+      }
+      try {
+        const res = await getTopicLevel(user.user_id, topic);
+        setTopicLevel(res.data.level);
+      } catch (err) {
+        console.error("Konu seviyesi alınamadı", err);
+      }
+    };
+    
+    // API'yi yormamak için basit bir debounce (300ms)
+    const timeoutId = setTimeout(() => {
+      fetchTopicLevel();
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [topic, user.user_id]);
+
 
   useEffect(() => {
     // Component yüklendiğinde dokümanları getir
     const fetchDocs = async () => {
       try {
-        const res = await getDocuments();
-        setDocuments(res.data);
+        const res = await getDocuments(user.user_id);
+        const readyDocs = res.data.filter(doc => doc.status === 'ready');
+        setDocuments(readyDocs);
       } catch (err) {
         console.error("Dokümanlar alınamadı", err);
       }
     };
     fetchDocs();
 
-    return () => clearInterval(timerRef.current);
+    return () => {
+      clearInterval(timerRef.current);
+      setQuizActive(false);
+    };
   }, []);
 
   const startQuiz = async () => {
     if (!topic.trim()) return;
+    setLoadingText('AI sorularını hazırlıyor...');
     setStep('loading');
 
     try {
-      const res = await getQuiz(user.user_id, topic, numQuestions, 'multiple_choice');
+      const res = await getQuiz(user.user_id, topic, numQuestions, questionType);
       const quiz = res.data.quiz;
       setQuestions(quiz.questions || []);
       setDifficulty(res.data.difficulty_level);
@@ -46,6 +80,7 @@ export default function Quiz({ user, updateUser }) {
       setShowExplanation(false);
       setTimer(0);
       setStep('quiz');
+      setQuizActive(true);
 
       timerRef.current = setInterval(() => {
         setTimer((prev) => prev + 1);
@@ -61,8 +96,15 @@ export default function Quiz({ user, updateUser }) {
     setAnswers((prev) => ({ ...prev, [qIdx]: optIdx }));
   };
 
+  const handleTextAnswer = (qIdx, text) => {
+    if (showExplanation) return;
+    setAnswers((prev) => ({ ...prev, [qIdx]: text }));
+  };
 
   const submitAnswer = () => {
+    // If it's open ended, there is no explanation, but we can just move on or show "Answer Saved"
+    // Wait, in open ended there is no immediate check, but we can just say "Kaydedildi".
+    // For simplicity, we just set showExplanation to true which shows the next button.
     setShowExplanation(true);
   };
 
@@ -77,24 +119,57 @@ export default function Quiz({ user, updateUser }) {
 
   const finishQuiz = async () => {
     clearInterval(timerRef.current);
+    
+    setLoadingText('Cevapların yapay zeka tarafından değerlendiriliyor...');
+    setStep('loading');
 
-    let correctCount = 0;
+    let totalScore = 0;
+    let correctMCQCount = 0;
+    const openEndedAnswers = [];
+
     questions.forEach((q, idx) => {
-      if (answers[idx] === q.correct_answer) correctCount++;
+      if (q.type === 'multiple_choice' || !q.type) {
+        if (answers[idx] === q.correct_answer) {
+          correctMCQCount++;
+          totalScore += 100;
+        }
+      } else if (q.type === 'open_ended') {
+        openEndedAnswers.push({
+          questionId: idx,
+          question: q.question,
+          ideal_answer: q.ideal_answer,
+          student_answer: answers[idx] || ''
+        });
+      }
     });
 
-    const score = Math.round((correctCount / questions.length) * 100);
+    let openEndedEvaluations = [];
+    if (openEndedAnswers.length > 0) {
+      try {
+        const res = await evaluateAnswers(openEndedAnswers);
+        openEndedEvaluations = res.data.evaluations || [];
+        
+        openEndedEvaluations.forEach(evalResult => {
+          totalScore += (evalResult.score || 0);
+        });
+      } catch (err) {
+        console.error("Evaluation error", err);
+      }
+    }
+
+    const finalScore = questions.length > 0 ? Math.round(totalScore / questions.length) : 0;
 
     try {
-      const res = await saveScore(user.user_id, topic, score, questions.length, Math.round(correctCount), timer);
+      const res = await saveScore(user.user_id, topic, finalScore, questions.length, correctMCQCount, timer);
       setResult({
-        score,
-        correctCount: Math.round(correctCount),
+        score: finalScore,
+        correctCount: correctMCQCount,
         totalQuestions: questions.length,
         timeSpent: timer,
         message: res.data.message,
         newLevel: res.data.current_level,
         newPoints: res.data.new_total_points,
+        evaluations: openEndedEvaluations
       });
       setNewBadges(res.data.new_badges || []);
 
@@ -105,17 +180,19 @@ export default function Quiz({ user, updateUser }) {
     } catch (err) {
       console.error('Save score error:', err);
       setResult({
-        score,
-        correctCount: Math.round(correctCount),
+        score: finalScore,
+        correctCount: correctMCQCount,
         totalQuestions: questions.length,
         timeSpent: timer,
         message: 'Skor kaydedilemedi.',
         newLevel: user.level,
         newPoints: user.total_points,
+        evaluations: openEndedEvaluations
       });
     }
 
     setStep('result');
+    setQuizActive(false);
   };
 
   const formatTime = (seconds) => {
@@ -129,6 +206,17 @@ export default function Quiz({ user, updateUser }) {
     setQuestions([]);
     setResult(null);
     setNewBadges([]);
+    setQuizActive(false);
+  };
+
+  const handleExitQuiz = () => {
+    setShowExitModal(true);
+  };
+
+  const confirmExitQuiz = () => {
+    clearInterval(timerRef.current);
+    setShowExitModal(false);
+    resetQuiz();
   };
 
   // === SETUP SCREEN ===
@@ -167,19 +255,41 @@ export default function Quiz({ user, updateUser }) {
                     <option value={20}>20 Soru</option>
                   </select>
                 </div>
-              </div>
-
-              <div style={{ marginTop: '8px', padding: '16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Mevcut Seviye</div>
-                <div style={{ fontSize: '16px', fontWeight: 700 }}>
-                  <span className={`badge ${user.level === 'İleri Seviye' ? 'badge-advanced' : user.level === 'Orta Seviye' ? 'badge-intermediate' : 'badge-beginner'}`}>
-                    {user.level || 'Başlangıç'}
-                  </span>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', marginLeft: '8px' }}>
-                    Sorular seviyenize göre otomatik ayarlanır
-                  </span>
+                
+                <div className="form-group">
+                  <label className="form-label">Soru Tipi</label>
+                  <select className="form-select" value={questionType} onChange={(e) => setQuestionType(e.target.value)}>
+                    <option value="mixed">Karma (Çoktan Seçmeli + Klasik)</option>
+                    <option value="multiple_choice">Sadece Çoktan Seçmeli</option>
+                    <option value="open_ended">Sadece Açık Uçlu (Klasik)</option>
+                  </select>
                 </div>
               </div>
+
+              <div style={{ marginTop: '8px', padding: '16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>🌐 Genel Seviyen</div>
+                  <div style={{ fontSize: '16px', fontWeight: 700 }}>
+                    <span className={`badge ${user.level === 'Uzman' ? 'badge-expert' : user.level === 'İleri Seviye' ? 'badge-advanced' : user.level === 'Orta Seviye' ? 'badge-intermediate' : user.level === 'Temel Seviye' ? 'badge-elementary' : 'badge-beginner'}`}>
+                      {user.level || 'Başlangıç'}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>📚 Bu PDF'deki Seviyen</div>
+                  <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                    {topicLevel ? (
+                      <span className={`badge ${topicLevel === 'Uzman' ? 'badge-expert' : topicLevel === 'İleri Seviye' ? 'badge-advanced' : topicLevel === 'Orta Seviye' ? 'badge-intermediate' : topicLevel === 'Temel Seviye' ? 'badge-elementary' : 'badge-beginner'}`}>
+                        {topicLevel}
+                      </span>
+                    ) : (
+                      "Konu veya PDF seçtiğinde hesaplanacaktır"
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
 
               <button
                 className="btn btn-primary btn-lg"
@@ -247,8 +357,8 @@ export default function Quiz({ user, updateUser }) {
     return (
       <div className="loading" style={{ minHeight: '60vh' }}>
         <div className="spinner" />
-        <span className="loading-text">AI sorularını hazırlıyor...</span>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Bu birkaç saniye sürebilir</span>
+        <span className="loading-text">{loadingText}</span>
+        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Lütfen bekleyin...</span>
       </div>
     );
   }
@@ -275,11 +385,21 @@ export default function Quiz({ user, updateUser }) {
           </div>
 
           {/* Zorluk seviyesi */}
-          <div style={{ marginBottom: '16px' }}>
-            <span className={`badge ${difficulty === 'İleri Seviye' ? 'badge-advanced' : difficulty === 'Orta Seviye' ? 'badge-intermediate' : 'badge-beginner'}`}>
-              {difficulty || 'Başlangıç'}
-            </span>
+          <div style={{ marginBottom: '16px', display: 'flex', gap: '16px' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase' }}>📚 Bu PDF'deki Seviyen</div>
+              <span className={`badge ${difficulty === 'Uzman' ? 'badge-expert' : difficulty === 'İleri Seviye' ? 'badge-advanced' : difficulty === 'Orta Seviye' ? 'badge-intermediate' : difficulty === 'Temel Seviye' ? 'badge-elementary' : 'badge-beginner'}`}>
+                {difficulty || 'Başlangıç'}
+              </span>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase' }}>🌐 Genel Seviyen</div>
+              <span className={`badge ${user.level === 'Uzman' ? 'badge-expert' : user.level === 'İleri Seviye' ? 'badge-advanced' : user.level === 'Orta Seviye' ? 'badge-intermediate' : user.level === 'Temel Seviye' ? 'badge-elementary' : 'badge-beginner'}`}>
+                {user.level || 'Başlangıç'}
+              </span>
+            </div>
           </div>
+
 
           {/* Soru Kartı */}
           <div className="quiz-question-card" key={currentQ}>
@@ -287,24 +407,35 @@ export default function Quiz({ user, updateUser }) {
             <div className="quiz-question-text">{q.question}</div>
 
             <div className="quiz-options">
-              {(q.options || []).map((opt, idx) => {
-                const letters = ['A', 'B', 'C', 'D', 'E'];
-                let optClass = 'quiz-option';
-                if (answers[currentQ] === idx) optClass += ' selected';
-                if (showExplanation) {
-                  if (idx === q.correct_answer) optClass += ' correct';
-                  else if (answers[currentQ] === idx && idx !== q.correct_answer) optClass += ' wrong';
-                }
+              {q.type === 'open_ended' ? (
+                <textarea
+                  className="form-input"
+                  style={{ height: '140px', resize: 'vertical', width: '100%', padding: '16px', fontSize: '16px' }}
+                  placeholder="Cevabınızı buraya yazın..."
+                  value={answers[currentQ] || ''}
+                  onChange={(e) => handleTextAnswer(currentQ, e.target.value)}
+                  disabled={showExplanation}
+                />
+              ) : (
+                (q.options || []).map((opt, idx) => {
+                  const letters = ['A', 'B', 'C', 'D', 'E'];
+                  let optClass = 'quiz-option';
+                  if (answers[currentQ] === idx) optClass += ' selected';
+                  if (showExplanation) {
+                    if (idx === q.correct_answer) optClass += ' correct';
+                    else if (answers[currentQ] === idx && idx !== q.correct_answer) optClass += ' wrong';
+                  }
 
-                return (
-                  <div key={idx} className={optClass} onClick={() => selectOption(currentQ, idx)}>
-                    <div className="quiz-option-letter">{letters[idx] || (idx+1)}</div>
-                    <span>{opt}</span>
-                    {showExplanation && idx === q.correct_answer && <FiCheck style={{ marginLeft: 'auto', color: '#34d399' }} />}
-                    {showExplanation && answers[currentQ] === idx && idx !== q.correct_answer && <FiX style={{ marginLeft: 'auto', color: '#f87171' }} />}
-                  </div>
-                );
-              })}
+                  return (
+                    <div key={idx} className={optClass} onClick={() => selectOption(currentQ, idx)}>
+                      <div className="quiz-option-letter">{letters[idx] || (idx+1)}</div>
+                      <span>{opt}</span>
+                      {showExplanation && idx === q.correct_answer && <FiCheck style={{ marginLeft: 'auto', color: '#34d399' }} />}
+                      {showExplanation && answers[currentQ] === idx && idx !== q.correct_answer && <FiX style={{ marginLeft: 'auto', color: '#f87171' }} />}
+                    </div>
+                  );
+                })
+              )}
             </div>
 
             {showExplanation && q.explanation && (
@@ -317,7 +448,9 @@ export default function Quiz({ user, updateUser }) {
 
           {/* Aksiyonlar */}
           <div className="quiz-actions">
-            <div />
+            <button className="btn" onClick={handleExitQuiz} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid #ef4444' }}>
+              <FiLogOut /> Sınavdan Çık
+            </button>
             {!showExplanation ? (
               <button className="btn btn-primary" onClick={submitAnswer} disabled={!isAnswered}>
                 Kontrol Et <FiCheck />
@@ -329,6 +462,28 @@ export default function Quiz({ user, updateUser }) {
             )}
           </div>
         </div>
+
+        {/* Exit Quiz Modal */}
+        {showExitModal && (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 9999
+          }}>
+            <div className="card" style={{ width: '420px', maxWidth: '90%', animation: 'fadeIn 0.2s ease-out', margin: 0 }}>
+              <h3 style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: '#f59e0b' }}>
+                <FiAlertTriangle size={24} /> Sınavdan Çıkış
+              </h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', lineHeight: '1.5' }}>
+                Sınav devam ediyor. Şu ana kadar ki ilerlemeniz <strong>kaydedilmeyecektir</strong>. Çıkmak istediğinize emin misiniz?
+              </p>
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button className="btn" onClick={() => setShowExitModal(false)} style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>Sınava Dön</button>
+                <button className="btn" onClick={confirmExitQuiz} style={{ background: '#ef4444', color: '#fff' }}>Evet, Çık</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -387,7 +542,25 @@ export default function Quiz({ user, updateUser }) {
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              {/* Açık Uçlu Soru Geri Bildirimleri */}
+              {result.evaluations && result.evaluations.length > 0 && (
+                <div style={{ marginTop: '24px', textAlign: 'left' }}>
+                  <h4 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px', color: 'var(--text-primary)' }}>📝 Açık Uçlu Soru Geri Bildirimleri</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {result.evaluations.map((ev, i) => (
+                      <div key={i} style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <span style={{ fontWeight: 600 }}>Soru {ev.questionId + 1}</span>
+                          <span className={`badge ${ev.score >= 80 ? 'badge-advanced' : ev.score >= 50 ? 'badge-intermediate' : 'badge-beginner'}`}>Puan: {ev.score}/100</span>
+                        </div>
+                        <p style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>{ev.feedback}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '24px' }}>
                 <button className="btn btn-primary" onClick={resetQuiz}>
                   <FiRefreshCw /> Yeni Quiz
                 </button>

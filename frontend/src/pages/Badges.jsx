@@ -49,25 +49,6 @@ export default function Badges({ user }) {
         <p>Başarılarını topla ve koleksiyonunu tamamla!</p>
       </div>
 
-      {/* İlerleme */}
-      <div className="card" style={{ marginBottom: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-          <div>
-            <div style={{ fontSize: '14px', fontWeight: 600 }}>Rozet İlerlemesi</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              {earned.length} / {badges.length} rozet kazanıldı
-            </div>
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 900, color: 'var(--accent-primary-light)' }}>
-            {badges.length > 0 ? Math.round((earned.length / badges.length) * 100) : 0}%
-          </div>
-        </div>
-        <div className="progress-bar" style={{ height: '10px' }}>
-          <div className="progress-fill" style={{ 
-            width: `${badges.length > 0 ? (earned.length / badges.length) * 100 : 0}%` 
-          }} />
-        </div>
-      </div>
 
       {/* Filtre */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>

@@ -83,6 +83,18 @@ class Document(Base):
     page_count = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
     status = Column(String, default="processing")  # processing, ready, error
+    user_id = Column(Integer, ForeignKey("users.id"))
+    owner = relationship("User")
+
+# Şifre Sıfırlama Token'ları
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    token = Column(String, unique=True, index=True)
+    expires_at = Column(DateTime)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 # Veritabanı oturumu yönetimi
 def get_db():
@@ -93,23 +105,42 @@ def get_db():
         db.close()
 
 def seed_badges(db):
-    """Varsayılan rozetleri oluşturur."""
+    """Varsayılan rozetleri oluşturur veya günceller."""
+    # Mevcut rozetleri temizle ve yeniden oluştur
     existing = db.query(Badge).count()
     if existing > 0:
         return
     
     badges = [
+        # Quiz sayısı rozetleri (zorlaştırılmış)
         Badge(name="İlk Adım", description="İlk quizini tamamla", icon="🎯", category="quiz", requirement_type="quizzes", requirement_value=1),
-        Badge(name="Quiz Ustası", description="10 quiz tamamla", icon="🏆", category="quiz", requirement_type="quizzes", requirement_value=10),
-        Badge(name="Bilgi Avcısı", description="25 quiz tamamla", icon="🎓", category="quiz", requirement_type="quizzes", requirement_value=25),
-        Badge(name="100 Puan", description="100 puan topla", icon="💯", category="points", requirement_type="points", requirement_value=100),
-        Badge(name="500 Puan", description="500 puan topla", icon="⭐", category="points", requirement_type="points", requirement_value=500),
-        Badge(name="1000 Puan", description="1000 puan topla", icon="🌟", category="points", requirement_type="points", requirement_value=1000),
+        Badge(name="Meraklı Öğrenci", description="5 quiz tamamla", icon="📚", category="quiz", requirement_type="quizzes", requirement_value=5),
+        Badge(name="Quiz Savaşçısı", description="15 quiz tamamla", icon="⚔️", category="quiz", requirement_type="quizzes", requirement_value=15),
+        Badge(name="Quiz Ustası", description="30 quiz tamamla", icon="🏆", category="quiz", requirement_type="quizzes", requirement_value=30),
+        Badge(name="Efsane", description="50 quiz tamamla", icon="👑", category="quiz", requirement_type="quizzes", requirement_value=50),
+        Badge(name="Bilgi Makinesi", description="100 quiz tamamla", icon="🤖", category="quiz", requirement_type="quizzes", requirement_value=100),
+        
+        # Puan rozetleri (zorlaştırılmış)
+        Badge(name="Yüz Puan", description="100 puan topla", icon="💯", category="points", requirement_type="points", requirement_value=100),
+        Badge(name="Beş Yüz", description="500 puan topla", icon="⭐", category="points", requirement_type="points", requirement_value=500),
+        Badge(name="Bin Puan", description="1000 puan topla", icon="🌟", category="points", requirement_type="points", requirement_value=1000),
+        Badge(name="Puan Canavarı", description="2500 puan topla", icon="🔥", category="points", requirement_type="points", requirement_value=2500),
+        Badge(name="Puan Kralı", description="5000 puan topla", icon="💎", category="points", requirement_type="points", requirement_value=5000),
+        
+        # Seviye rozetleri
         Badge(name="Çaylak", description="Başlangıç seviyesini tamamla", icon="🌱", category="level", requirement_type="level", requirement_value=1),
-        Badge(name="Orta Seviye", description="Orta Seviye seviyesine ulaş", icon="🌿", category="level", requirement_type="level", requirement_value=2),
-        Badge(name="Uzman", description="İleri Seviye seviyesine ulaş", icon="🌳", category="level", requirement_type="level", requirement_value=3),
+        Badge(name="Öğrenci", description="Temel Seviyeye ulaş", icon="🌿", category="level", requirement_type="level", requirement_value=2),
+        Badge(name="Gelişen Öğrenci", description="Orta Seviyeye ulaş", icon="🌳", category="level", requirement_type="level", requirement_value=3),
+        Badge(name="Profesyonel", description="İleri Seviyeye ulaş", icon="🏅", category="level", requirement_type="level", requirement_value=4),
+        Badge(name="Üstad", description="Uzman Seviyeye ulaş", icon="👑", category="level", requirement_type="level", requirement_value=5),
+        
+        # Seri (streak) rozetleri (zorlaştırılmış)
         Badge(name="3 Gün Seri", description="3 gün üst üste çalış", icon="🔥", category="streak", requirement_type="streak", requirement_value=3),
-        Badge(name="7 Gün Seri", description="7 gün üst üste çalış", icon="💪", category="streak", requirement_type="streak", requirement_value=7),
+        Badge(name="Haftalık Seri", description="7 gün üst üste çalış", icon="💪", category="streak", requirement_type="streak", requirement_value=7),
+        Badge(name="Kararlı Öğrenci", description="14 gün üst üste çalış", icon="🏅", category="streak", requirement_type="streak", requirement_value=14),
+        Badge(name="Demir İrade", description="30 gün üst üste çalış", icon="🛡️", category="streak", requirement_type="streak", requirement_value=30),
+        
+        # Performans rozetleri
         Badge(name="Mükemmel Skor", description="Bir quizden %100 al", icon="💎", category="quiz", requirement_type="perfect", requirement_value=1),
     ]
     

@@ -45,8 +45,10 @@ export default function Dashboard({ user }) {
 
   const levelColors = {
     'Başlangıç': 'badge-beginner',
+    'Temel Seviye': 'badge-elementary',
     'Orta Seviye': 'badge-intermediate',
-    'İleri Seviye': 'badge-advanced'
+    'İleri Seviye': 'badge-advanced',
+    'Uzman': 'badge-expert'
   };
 
   return (
@@ -56,7 +58,35 @@ export default function Dashboard({ user }) {
         <p>Öğrenme yolculuğun burada başlıyor. Güncel durumunu gözden geçir.</p>
       </div>
 
+      {/* Genel Seviye İlerlemesi */}
+      {profile?.global_progress_percent !== undefined && (
+        <div className="card" style={{ marginBottom: '24px', padding: '16px 20px', background: 'linear-gradient(135deg, rgba(99,102,241,0.05), rgba(139,92,246,0.05))', border: '1px solid rgba(99,102,241,0.15)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '12px' }}>
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                Sonraki Seviyeye İlerleme
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span className={`badge ${levelColors[profile.current_level] || 'badge-beginner'}`}>
+                  {profile.current_level || 'Başlangıç'}
+                </span>
+                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-muted)' }}>
+                  ({profile.global_progress_text})
+                </span>
+              </div>
+            </div>
+            <div style={{ fontSize: '20px', fontWeight: 800, color: 'var(--accent-primary)' }}>
+              %{profile.global_progress_percent}
+            </div>
+          </div>
+          <div className="progress-bar" style={{ height: '8px', marginBottom: 0, background: 'rgba(99,102,241,0.1)' }}>
+            <div className="progress-fill" style={{ width: `${profile.global_progress_percent}%`, background: 'linear-gradient(90deg, #6366f1, #8b5cf6)' }} />
+          </div>
+        </div>
+      )}
+
       {/* İstatistik Kartları */}
+
       <div className="card-grid card-grid-4" style={{ marginBottom: '24px' }}>
         <div className="stat-card">
           <div className="stat-icon purple"><FiTarget /></div>
