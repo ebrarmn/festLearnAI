@@ -4,7 +4,7 @@
 
 ## Proje Tanımı
 
-**festLearnAI**, öğrencilerin öğrenme süreçlerini daha etkili ve verimli hale getirmek amacıyla tasarlanan yapay zeka destekli, kişiselleştirilmiş bir eğitim platformudur. Bu sistem, kullanıcıların kendi PDF formatındaki dokümanlarını (ders notları, akademik makaleler vb.) yükleyerek, bu materyaller üzerinden otomatik olarak üretilen çoktan seçmeli quizlerle kendilerini test etmelerini sağlar. 
+**festLearnAI**, öğrencilerin öğrenme süreçlerini daha etkili ve verimli hale getirmek amacıyla tasarlanan yapay zeka destekli, kişiselleştirilmiş bir eğitim platformudur. Bu sistem, kullanıcıların kendi PDF formatındaki dokümanlarını (ders notları, akademik makaleler vb.) yükleyerek, bu materyaller üzerinden otomatik olarak üretilen çoktan seçmeli ve açık uçlu (klasik) quizlerle kendilerini test etmelerini sağlar. Öğrencilerin klasik sorulara verdiği yanıtlar, "LLM-as-a-Judge" (Yapay Zeka Hakemi) mimarisi ile tıpkı bir öğretmen gibi okunup değerlendirilir ve geri bildirim verilir.
 
 Proje, yalnızca metin okuma alışkanlığını "aktif geri çağırma" (active recall) yöntemiyle destekleyerek kalıcı öğrenmeyi hedefler. Platform, oyunlaştırma bileşenleri (rozetler, gün serileri) ve analitik paneli (dashboard) ile öğrencinin motivasyonunu yüksek tutarken, aynı zamanda RAG (Retrieval-Augmented Generation) altyapısı sayesinde sadece yüklenen belgeye sadık, halüsinasyondan uzak bir soru üretim mekanizması sunar.
 
@@ -21,7 +21,7 @@ Projenin geliştirilmesinde performanslı ve modern bir teknoloji yığını (st
     *   **ChromaDB:** Doküman parçacıkları ve semantik aramalar (vektör veritabanı) için.
 *   **Yapay Zeka (AI) ve API'ler:**
     *   **Google Gemini Vision (1.5 Flash):** PDF sayfalarından metin ve görsel çıkarma (OCR) için.
-    *   **xAI Grok (grok-4-fast-reasoning):** Bağlama uygun, zorluk seviyesi ayarlanmış dinamik soruların üretimi için.
+    *   **xAI Grok (grok-4-fast-reasoning):** Bağlama uygun, zorluk seviyesi ayarlanmış dinamik soruların üretimi ve açık uçlu cevapların değerlendirilmesi (LLM-as-a-Judge) için.
     *   **Google Generative AI Embeddings:** Metin parçacıklarını vektöre dönüştürmek için.
 
 ---
@@ -82,21 +82,6 @@ npm install
 npm run dev
 ```
 Uygulama `http://localhost:5173` adresinde çalışmaya başlayacaktır.
-
----
-
-## Demo Açıklaması
-
-*Lütfen aşağıdaki alana proje sunumu için hazırladığınız demo videosunun linkini ekleyiniz.*
-
-**Demo Videosu:** [YouTube/Drive Linki Buraya Gelecek]
-
-Demo videosunda aşağıdaki ana akışlar sırasıyla gösterilmektedir:
-1.  **Sisteme Giriş ve Dashboard:** Kullanıcı kaydı ve JWT tabanlı giriş yapılması.
-2.  **PDF Yükleme:** Akademik bir PDF belgesinin sisteme yüklenmesi ve AI tarafından işlenmesi süreci.
-3.  **Quiz Deneyimi ve RAG Etkileşimi:** Yüklenen belge üzerinden istenilen seviyede quiz oluşturulması, soruların cevaplanması.
-4.  **Oyunlaştırma:** Quiz sonucunda adaptif seviye değişiminin ve rozet kazanımının (pop-up animasyonuyla) gösterilmesi.
-5.  **İstatistikler:** Çözülen quiz verilerinin profil sayfasındaki grafiklere gerçek zamanlı olarak yansıması.
 
 ---
 *Bu proje Fırat Üniversitesi Teknoloji Fakültesi Yazılım Mühendisliği Bitirme Projesi kapsamında geliştirilmiştir.*
